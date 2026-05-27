@@ -259,6 +259,8 @@ const LEFT_COLUMN_WIDTHS = {
   project: 220,
 };
 
+const UPLOADED_DATA_STORAGE_KEY = "gantt-uploaded-data-v1";
+
 function getLeftColumnWidth(column) {
   return LEFT_COLUMN_WIDTHS[column] || 120;
 }
@@ -573,10 +575,23 @@ function GanttChart() {
   const [csvMode, setCsvMode] = useState(false);
   const [csvError, setCsvError] = useState("");
   const [data, setData] = useState([]);
-  const [hasUploadedData, setHasUploadedData] = useState(false);
   const [sortConfig, setSortConfig] = useState({ by: "chronological", direction: "asc" });
   const [lastRefresh, setLastRefresh] = useState(null);
   const fileInputRef = useRef(null);
+
+  // Persist and restore the latest uploaded dataset in browser cache.
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem(UPLOADED_DATA_STORAGE_KEY);
+      if (!cached) return;
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        setData(parsed);
+      }
+    } catch {
+      // Ignore malformed cache.
+    }
+  }, []);
 
   const toggleSort = (field) => {
     setSortConfig((prev) => {
@@ -905,12 +920,9 @@ function GanttChart() {
       const parsedGroups = texts.map(text => parseCsvText(text));
       const merged = mergeParsedProjects(parsedGroups);
 
-      // If user uploads again, append/merge with previously uploaded CSV data.
-      const baseData = hasUploadedData ? data : [];
-      const nextData = mergeParsedProjects([baseData, merged]);
-
-      setData(nextData);
-      setHasUploadedData(true);
+      // Replace with the latest uploaded dataset and cache it.
+      setData(merged);
+      localStorage.setItem(UPLOADED_DATA_STORAGE_KEY, JSON.stringify(merged));
       // Default upload window requested by business users.
       setRangeStart("2026-01-01");
       setRangeEnd("2026-12-31");
