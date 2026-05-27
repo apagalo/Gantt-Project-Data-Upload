@@ -254,16 +254,17 @@ function getDataBounds(projects) {
   };
 }
 
-const LEFT_COLUMN_WIDTHS = {
+const DEFAULT_LEFT_COLUMN_WIDTHS = {
   priority: 50,
   project: 220,
 };
 
-const UPLOADED_DATA_STORAGE_KEY = "gantt-uploaded-data-v1";
+const MIN_COLUMN_WIDTHS = {
+  priority: 50,
+  project: 160,
+};
 
-function getLeftColumnWidth(column) {
-  return LEFT_COLUMN_WIDTHS[column] || 120;
-}
+const UPLOADED_DATA_STORAGE_KEY = "gantt-uploaded-data-v1";
 
 function mergeParsedProjects(projectGroups) {
   const mergedMap = {};
@@ -577,7 +578,33 @@ function GanttChart() {
   const [data, setData] = useState([]);
   const [sortConfig, setSortConfig] = useState({ by: "chronological", direction: "asc" });
   const [lastRefresh, setLastRefresh] = useState(null);
+  const [priorityWidth, setPriorityWidth] = useState(DEFAULT_LEFT_COLUMN_WIDTHS.priority);
+  const [projectWidth, setProjectWidth] = useState(DEFAULT_LEFT_COLUMN_WIDTHS.project);
   const fileInputRef = useRef(null);
+
+  const startColumnResize = (column, event) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = column === "priority" ? priorityWidth : projectWidth;
+    const minWidth = MIN_COLUMN_WIDTHS[column] || 120;
+
+    const onMouseMove = (moveEvent) => {
+      const nextWidth = Math.max(minWidth, startWidth + (moveEvent.clientX - startX));
+      if (column === "priority") {
+        setPriorityWidth(nextWidth);
+      } else if (column === "project") {
+        setProjectWidth(nextWidth);
+      }
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
 
   // Persist and restore the latest uploaded dataset in browser cache.
   useEffect(() => {
@@ -615,11 +642,11 @@ function GanttChart() {
   const globalMin = visiblePhaseDates[0] || allPhaseDates[0];
   const globalMax = visiblePhaseDates[visiblePhaseDates.length - 1] || allPhaseDates[allPhaseDates.length - 1];
 
-  // Initialize or update date range when data loads
+  // Initialize default range to 2026 when data is present.
   useEffect(() => {
     if (globalMin && globalMax && (!rangeStart || !rangeEnd)) {
-      setRangeStart(globalMin);
-      setRangeEnd(globalMax);
+      setRangeStart("2026-01-01");
+      setRangeEnd("2026-12-31");
     }
   }, [globalMin, globalMax, rangeStart, rangeEnd]);
 
@@ -647,6 +674,12 @@ function GanttChart() {
         filterRoadmaps
           .map(normalizeRoadmapValue)
           .includes(normalizeRoadmapValue(p.roadmap))
+      ) &&
+      (
+        !rangeStart || !rangeEnd ||
+        (p.phases || [])
+          .filter(ph => !isNonPhaseSpecific(ph.name))
+          .some(ph => ph.start <= rangeEnd && ph.end >= rangeStart)
       )
     );
 
@@ -682,7 +715,7 @@ function GanttChart() {
       if (firstA !== firstB) return firstA.localeCompare(firstB);
       return `${projectA}${a.client}`.localeCompare(`${projectB}${b.client}`);
     });
-  }, [data, filterClients, filterStatuses, filterLocations, filterRoadmaps, sortConfig]);
+  }, [data, filterClients, filterStatuses, filterLocations, filterRoadmaps, rangeStart, rangeEnd, sortConfig]);
 
   const totalDays = daysBetween(rangeStart, rangeEnd) || 1;
 
@@ -975,18 +1008,39 @@ function GanttChart() {
         </button>
       </div>
 
+      {/* Empty state */}
+      {data.length === 0 && !csvMode && (
+        <div style={{
+          minHeight: "calc(100vh - 180px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          marginBottom: 20,
+        }}>
+          <div style={{
+            background: "white",
+            borderRadius: 12,
+            padding: "28px 34px",
+            border: "1.5px solid #cdd3d8",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+            textAlign: "center",
+            maxWidth: 520,
+            width: "100%",
+          }}>
+            <div style={{ fontSize: 22, color: "#1c3a54", fontWeight: 700, lineHeight: 1.25 }}>Upload your data to get started 📊</div>
+            <p style={{ fontSize: 15, color: "#6b7c88", marginTop: 10, marginBottom: 0 }}>
+              Upload up to 3 CSV files to visualize the dashboard.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* CSV upload panel */}
-      {(csvMode || data.length === 0) && (
+      {csvMode && (
         <div style={{
           background: "white", borderRadius: 10, padding: 20, marginBottom: 20,
           border: "1.5px solid #cdd3d8", boxShadow: "0 2px 8px rgba(0,0,0,0.06)"
         }}>
-          {data.length === 0 && (
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 14, color: "#1c3a54", fontWeight: 600 }}>Upload your data to get started 📊</div>
-              <p style={{ fontSize: 12, color: "#6b7c88", marginTop: 6 }}>Upload up to 3 CSV files to visualize the dashboard.</p>
-            </div>
-          )}
           <div style={{ fontSize: 12, fontWeight: 600, color: "#3a6482", marginBottom: 6 }}>
             Upload a CSV file — required columns:
           </div>
@@ -1070,11 +1124,35 @@ function GanttChart() {
       }}>
         {/* Timeline header */}
         <div style={{ display: "flex", borderBottom: "1px solid #dde1e4" }}>
-          <div style={{ width: getLeftColumnWidth("priority"), minWidth: getLeftColumnWidth("priority"), padding: "10px 12px", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#6b7c88", textTransform: "uppercase", borderRight: "1px solid #dde1e4" }}>
+          <div style={{ width: priorityWidth, minWidth: priorityWidth, maxWidth: priorityWidth, padding: "10px 12px", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#6b7c88", textTransform: "uppercase", borderRight: "1px solid #dde1e4", position: "relative" }}>
             Priority
+            <div
+              onMouseDown={(event) => startColumnResize("priority", event)}
+              style={{
+                position: "absolute",
+                top: 0,
+                right: -4,
+                width: 8,
+                height: "100%",
+                cursor: "col-resize",
+                zIndex: 5,
+              }}
+            />
           </div>
-          <div style={{ width: getLeftColumnWidth("project"), minWidth: getLeftColumnWidth("project"), padding: "10px 16px", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#6b7c88", textTransform: "uppercase", borderRight: "1px solid #dde1e4" }}>
+          <div style={{ width: projectWidth, minWidth: projectWidth, maxWidth: projectWidth, padding: "10px 16px", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#6b7c88", textTransform: "uppercase", borderRight: "1px solid #dde1e4", position: "relative" }}>
             Project / Client
+            <div
+              onMouseDown={(event) => startColumnResize("project", event)}
+              style={{
+                position: "absolute",
+                top: 0,
+                right: -4,
+                width: 8,
+                height: "100%",
+                cursor: "col-resize",
+                zIndex: 5,
+              }}
+            />
           </div>
           <div style={{ flex: 1, position: "relative", height: 36, overflow: "hidden" }}>
             {monthTicks.map((t, i) => (
@@ -1117,7 +1195,7 @@ function GanttChart() {
               }}
             >
               <div style={{
-                width: getLeftColumnWidth("priority"), minWidth: getLeftColumnWidth("priority"), padding: "8px 10px",
+                width: priorityWidth, minWidth: priorityWidth, maxWidth: priorityWidth, padding: "8px 10px",
                 borderRight: "1px solid #dde1e4",
                 borderLeft: `3px solid ${clientColor(proj.client)}`,
                 display: "flex", alignItems: "center", justifyContent: "center",
@@ -1134,11 +1212,11 @@ function GanttChart() {
               </div>
 
               <div style={{
-                width: getLeftColumnWidth("project"), minWidth: getLeftColumnWidth("project"), padding: "8px 12px 8px 14px",
+                width: projectWidth, minWidth: projectWidth, maxWidth: projectWidth, padding: "8px 12px 8px 14px",
                 borderRight: "1px solid #dde1e4",
                 display: "flex", flexDirection: "column", justifyContent: "center",
               }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#1c3a54", lineHeight: 1.2 }}>{proj.project}</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#1c3a54", lineHeight: 1.2, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{proj.project}</div>
                 <div style={{ fontSize: 10, color: "#6b7c88", marginTop: 2 }}>{proj.client}</div>
               </div>
 
