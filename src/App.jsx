@@ -184,6 +184,14 @@ const CLIENT_COLORS = {
 };
 function clientColor(c) { return CLIENT_COLORS[c] || "#aaa"; }
 
+function conditionEmoji(condition) {
+  const val = (condition || "").toLowerCase().trim();
+  if (val === "at risk") return "🔴";
+  if (val === "on track") return "🟢";
+  if (val === "needs attention") return "🟡";
+  return null;
+}
+
 function cleanCsvValue(value) {
   if (!value) return "";
   const trimmed = value.trim();
@@ -241,6 +249,29 @@ function preventPhaseOverlaps(phases) {
   return sorted;
 }
 
+function buildContiguousSpans(phaseName, dayMap) {
+  const dates = Object.keys(dayMap).filter(d => dayMap[d] > 0).sort();
+  if (dates.length === 0) return [];
+  const spans = [];
+  let spanStart = dates[0];
+  let spanEnd   = dates[0];
+  let spanHours = dayMap[dates[0]];
+  for (let i = 1; i < dates.length; i++) {
+    const gap = daysBetween(spanEnd, dates[i]);
+    if (gap <= 3) {
+      spanEnd    = dates[i];
+      spanHours += dayMap[dates[i]];
+    } else {
+      spans.push({ name: phaseName, start: spanStart, end: spanEnd, hours: spanHours });
+      spanStart = dates[i];
+      spanEnd   = dates[i];
+      spanHours = dayMap[dates[i]];
+    }
+  }
+  spans.push({ name: phaseName, start: spanStart, end: spanEnd, hours: spanHours });
+  return spans;
+}
+
 const ALLOWED_RECORD_TYPES = new Set(["Time & Fees"]);
 
 function getDataBounds(projects) {
@@ -255,12 +286,14 @@ function getDataBounds(projects) {
 }
 
 const DEFAULT_LEFT_COLUMN_WIDTHS = {
-  priority: 50,
+  priority: 60,
+  condition: 90,
   project: 220,
 };
 
 const MIN_COLUMN_WIDTHS = {
-  priority: 50,
+  priority: 40,
+  condition: 70,
   project: 160,
 };
 
@@ -279,6 +312,7 @@ function mergeParsedProjects(projectGroups) {
         status: project.status || "Unassigned",
         roadmap: project.roadmap || "Other",
         priority: project.priority || "",
+        condition: project.condition || "",
         locations: [...(project.locations || [])],
         phasesByName: {},
       };
@@ -293,17 +327,19 @@ function mergeParsedProjects(projectGroups) {
     if (!mergedMap[key].priority && project.priority) {
       mergedMap[key].priority = project.priority;
     }
+    if (!mergedMap[key].condition && project.condition) {
+      mergedMap[key].condition = project.condition;
+    }
     mergedMap[key].locations = [...new Set([...(mergedMap[key].locations || []), ...(project.locations || [])])];
 
     (project.phases || []).forEach((phase) => {
-      const phaseKey = phase.name;
+      const phaseKey = `${phase.name}||${phase.start}`;
       if (!mergedMap[key].phasesByName[phaseKey]) {
         mergedMap[key].phasesByName[phaseKey] = { ...phase };
         return;
       }
 
       const existing = mergedMap[key].phasesByName[phaseKey];
-      if (phase.start < existing.start) existing.start = phase.start;
       if (phase.end > existing.end) existing.end = phase.end;
       existing.hours += phase.hours || 0;
     });
@@ -316,6 +352,7 @@ function mergeParsedProjects(projectGroups) {
       status: project.status,
       roadmap: project.roadmap,
       priority: project.priority || "",
+      condition: project.condition || "",
       locations: project.locations,
       phases: preventPhaseOverlaps(Object.values(project.phasesByName)),
     }))
@@ -579,19 +616,22 @@ function GanttChart() {
   const [sortConfig, setSortConfig] = useState({ by: "chronological", direction: "asc" });
   const [lastRefresh, setLastRefresh] = useState(null);
   const [priorityWidth, setPriorityWidth] = useState(DEFAULT_LEFT_COLUMN_WIDTHS.priority);
+  const [conditionWidth, setConditionWidth] = useState(DEFAULT_LEFT_COLUMN_WIDTHS.condition);
   const [projectWidth, setProjectWidth] = useState(DEFAULT_LEFT_COLUMN_WIDTHS.project);
   const fileInputRef = useRef(null);
 
   const startColumnResize = (column, event) => {
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = column === "priority" ? priorityWidth : projectWidth;
+    const startWidth = column === "priority" ? priorityWidth : column === "condition" ? conditionWidth : projectWidth;
     const minWidth = MIN_COLUMN_WIDTHS[column] || 120;
 
     const onMouseMove = (moveEvent) => {
       const nextWidth = Math.max(minWidth, startWidth + (moveEvent.clientX - startX));
       if (column === "priority") {
         setPriorityWidth(nextWidth);
+      } else if (column === "condition") {
+        setConditionWidth(nextWidth);
       } else if (column === "project") {
         setProjectWidth(nextWidth);
       }
@@ -866,7 +906,7 @@ function GanttChart() {
       return obj;
     }).filter(r => Object.values(r).some(v => v));
 
-    const needed = ["Record Type", "Project", "Client", "Project State", "Project Location", "3i Roadmap", "Date", "Scheduled (hours)"];
+    const needed = ["Record Type", "Project", "Client", "Project Status", "Project Location", "3i Roadmap", "Date", "Scheduled (hours)"];
     const missing = needed.filter(h => !headers.includes(h));
     if (missing.length) throw new Error(`Missing columns: ${missing.join(", ")}`);
 
@@ -880,9 +920,10 @@ function GanttChart() {
       if (!project || !client) return;
 
       const key = `${project}||${client}`;
-      const projectState = cleanCsvValue(r["Project State"]) || cleanCsvValue(r["Project Status"]) || "Unassigned";
+      const projectState = cleanCsvValue(r["Project Status"]) || "Unassigned";
       const roadmap = cleanCsvValue(r["3i Roadmap"]) || "Other";
       const priority = cleanCsvValue(r.Priority || r.priority || r["Project Priority"]);
+      const condition = cleanCsvValue(r["Project Condition"] || r["Condition"] || r.condition || "");
       const locations = splitCsvList(r["Project Location"] || r.Location);
       const phaseName = cleanCsvValue(r["Phase Name"]) || "[Non Phase Specific]";
       const rowDate = parseCsvDate(r.Date);
@@ -895,6 +936,7 @@ function GanttChart() {
           status: projectState,
           roadmap,
           priority,
+          condition,
           locations,
           phasesByName: {},
         };
@@ -903,6 +945,7 @@ function GanttChart() {
       if (!projMap[key].status && projectState) projMap[key].status = projectState;
       if ((!projMap[key].roadmap || projMap[key].roadmap === "Other") && roadmap) projMap[key].roadmap = roadmap;
       if (!projMap[key].priority && priority) projMap[key].priority = priority;
+      if (!projMap[key].condition && condition) projMap[key].condition = condition;
       if (locations.length) {
         projMap[key].locations = [...new Set([...projMap[key].locations, ...locations])];
       }
@@ -910,18 +953,10 @@ function GanttChart() {
       if (!rowDate) return;
 
       if (!projMap[key].phasesByName[phaseName]) {
-        projMap[key].phasesByName[phaseName] = {
-          name: phaseName,
-          start: rowDate,
-          end: rowDate,
-          hours: 0,
-        };
+        projMap[key].phasesByName[phaseName] = { name: phaseName, dayMap: {} };
       }
-
-      const phase = projMap[key].phasesByName[phaseName];
-      if (rowDate < phase.start) phase.start = rowDate;
-      if (rowDate > phase.end) phase.end = rowDate;
-      phase.hours += hours;
+      const dayBucket = projMap[key].phasesByName[phaseName].dayMap;
+      dayBucket[rowDate] = (dayBucket[rowDate] || 0) + hours;
     });
 
     return Object.values(projMap)
@@ -931,8 +966,13 @@ function GanttChart() {
         status: project.status || "Unassigned",
         roadmap: project.roadmap || "Other",
         priority: project.priority || "",
+        condition: project.condition || "",
         locations: project.locations,
-        phases: preventPhaseOverlaps(Object.values(project.phasesByName)),
+        phases: preventPhaseOverlaps(
+          Object.values(project.phasesByName).flatMap(p =>
+            buildContiguousSpans(p.name, p.dayMap)
+          )
+        ),
       }))
       .filter(project => project.phases.length > 0);
   }
@@ -1045,7 +1085,7 @@ function GanttChart() {
             Upload a CSV file — required columns:
           </div>
           <div style={{ fontSize: 11, color: "#6b7c88", marginBottom: 14, fontFamily: "monospace" }}>
-            Record Type, Project, Client, Project State, Project Location, 3i Roadmap, Date, Scheduled (hours)
+            Record Type, Project, Client, Project Status, Project Location, 3i Roadmap, Date, Scheduled (hours)
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <label style={{
@@ -1139,6 +1179,21 @@ function GanttChart() {
               }}
             />
           </div>
+          <div style={{ width: conditionWidth, minWidth: conditionWidth, maxWidth: conditionWidth, padding: "10px 12px", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#6b7c88", textTransform: "uppercase", borderRight: "1px solid #dde1e4", position: "relative" }}>
+            Condition
+            <div
+              onMouseDown={(event) => startColumnResize("condition", event)}
+              style={{
+                position: "absolute",
+                top: 0,
+                right: -4,
+                width: 8,
+                height: "100%",
+                cursor: "col-resize",
+                zIndex: 5,
+              }}
+            />
+          </div>
           <div style={{ width: projectWidth, minWidth: projectWidth, maxWidth: projectWidth, padding: "10px 16px", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#6b7c88", textTransform: "uppercase", borderRight: "1px solid #dde1e4", position: "relative" }}>
             Project / Client
             <div
@@ -1210,6 +1265,16 @@ function GanttChart() {
                   {cleanCsvValue(proj.priority) || "-"}
                 </span>
               </div>
+              <div style={{
+                width: conditionWidth, minWidth: conditionWidth, maxWidth: conditionWidth, padding: "8px 10px",
+                borderRight: "1px solid #dde1e4",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+              }}>
+                {conditionEmoji(proj.condition)
+                  ? <span style={{ fontSize: 14, lineHeight: 1 }} title={proj.condition}>{conditionEmoji(proj.condition)}</span>
+                  : <span style={{ fontSize: 10, color: "#9aabb5" }}>-</span>
+                }
+              </div>
 
               <div style={{
                 width: projectWidth, minWidth: projectWidth, maxWidth: projectWidth, padding: "8px 12px 8px 14px",
@@ -1245,21 +1310,6 @@ function GanttChart() {
 
                   return (
                     <div key={pi}>
-                      <span
-                        style={{
-                          position: "absolute",
-                          left: `${barStart * 100}%`,
-                          top: "50%",
-                          width: 8,
-                          height: 8,
-                          transform: "translate(-50%, -50%) rotate(45deg)",
-                          background: col.bg,
-                          border: "1px solid rgba(255,255,255,0.85)",
-                          borderRadius: 1,
-                          zIndex: 3,
-                          pointerEvents: "none",
-                        }}
-                      />
                       <div
                         onMouseEnter={(e) => setTooltip({ phase: ph, x: e.clientX, y: e.clientY })}
                         onMouseMove={(e) => setTooltip({ phase: ph, x: e.clientX, y: e.clientY })}
